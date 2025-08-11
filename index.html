@@ -227,19 +227,61 @@
                 return;
             }
 
-            // 📍 PROCESAR COORDENADAS CON NEAREST NEIGHBOR
-            let coords = ruta.coordenadas_array || [];
+            // 📍 PROCESAR COORDENADAS CON RUTA REAL (NO NEAREST NEIGHBOR)
+            // 1) Leer coords: PRIORIDAD al LineString real
+            let coordsLonLat = [];
+            const geom = trackingData?.ruta_calculada?.ruta?.geometria_completa?.geometry;
+            if (geom?.type === 'LineString' && Array.isArray(geom.coordinates)) {
+                coordsLonLat = geom.coordinates;            // [lon, lat]
+            } else {
+                // fallback: coordenadas_array (si existiera)
+                const arr = trackingData?.ruta_calculada?.ruta?.coordenadas_array
+                         || trackingData?.ruta_calculada?.coordenadas_array
+                         || [];
+                coordsLonLat = arr;
+            }
+
+            // 2) Convertir a [lat, lon]
+            let coords = coordsLonLat.map(([lon, lat]) => [lat, lon]);
+
+            // 3) Dedup suave por tolerancia
+            function dedupeTol(latlng, tolM = 2) {
+                const out = []; let prev = null;
+                const toRad = d => d * Math.PI / 180, R = 6371008.8;
+                for (const p of latlng) {
+                    if (!prev) { out.push(p); prev = p; continue; }
+                    const dlat = toRad(p[0] - prev[0]), dlon = toRad(p[1] - prev[1]);
+                    const a = Math.sin(dlat / 2) ** 2 + Math.cos(toRad(prev[0])) * Math.cos(toRad(p[0])) * Math.sin(dlon / 2) ** 2;
+                    const d = 2 * R * Math.asin(Math.sqrt(a));
+                    if (d > tolM) { out.push(p); prev = p; }
+                }
+                return out;
+            }
+            coords = dedupeTol(coords, 1.5);
+
+            // 4) Asegurar dirección: inicio≈tienda, fin≈cliente (si no, invertimos)
+            function distM(a, b) {
+                const toRad = d => d * Math.PI / 180, R = 6371008.8;
+                const dlat = toRad(b[0] - a[0]), dlon = toRad(b[1] - a[1]);
+                const x = Math.sin(dlat / 2) ** 2 + Math.cos(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.sin(dlon / 2) ** 2;
+                return 2 * R * Math.asin(Math.sqrt(x));
+            }
+            const tiendaLL = [tienda.lat, tienda.lon];
+            const clienteLL = [cliente.lat, cliente.lon];
+
+            const dStartTienda = distM(coords[0], tiendaLL);
+            const dEndTienda = distM(coords[coords.length - 1], tiendaLL);
+
+            // si la punta más cercana a tienda es el final, damos vuelta
+            if (dEndTienda < dStartTienda) coords.reverse();
+
+            // 5) Forzar extremos exactos si están lejos (>30 m)
+            if (distM(coords[0], tiendaLL) > 30) coords.unshift(tiendaLL);
+            if (distM(coords[coords.length - 1], clienteLL) > 30) coords.push(clienteLL);
             
-            // Convertir a [lat, lon] (de [lon, lat])
-            coords = coords.map(c => [c[1], c[0]]);
-            
-            // Deduplicar
-            coords = dedupeCoords(coords);
-            
-            // Aplicar nearest neighbor para ordenar correctamente
-            coords = nearestNeighborPath(coords, 0);
-            
-            console.log(`🗺️ Procesadas ${coords.length} coordenadas con Nearest Neighbor`);
+            console.log(`🗺️ Procesadas ${coords.length} coordenadas de la ruta real (LineString)`);
+            console.log(`🏪 Inicio: tienda (${tiendaLL})`);
+            console.log(`🏠 Final: cliente (${clienteLL})`);
 
             // 🗺️ RUTA (VERDE como La Geográfica)
             currentRoute = L.polyline(coords, {
@@ -300,9 +342,10 @@
                 </div>
             `).addTo(map);
 
-            // 🛵 RIDER ANIMADO (MÁS PEQUEÑO)
+            // 🛵 RIDER ANIMADO (EMPIEZA EXACTO EN TIENDA)
+            const tiendaPosition = [tienda.lat, tienda.lon];
             let currentStep = 0;
-            riderMarker = L.marker(coords[0], {
+            riderMarker = L.marker(tiendaPosition, {
                 icon: L.icon({
                     iconUrl: 'data:image/svg+xml;base64,' + btoa(`
                         <svg width="35" height="35" xmlns="http://www.w3.org/2000/svg">
@@ -320,22 +363,23 @@
                     iconSize: [35, 35],
                     iconAnchor: [17.5, 17.5]
                 })
-            }).bindPopup(`🛵 ${rider?.nombre || 'Rider'} en ruta`).addTo(map);
+            }).bindPopup(`🛵 ${rider?.nombre || 'Rider'} en la tienda`).addTo(map);
 
             currentMarkers = [tiendaMarker, clienteMarker];
 
-            // 🎬 ANIMACIÓN RIDER siguiendo la ruta ordenada
+            // 🎬 ANIMACIÓN RIDER siguiendo la ruta REAL
             let animationStartTime = Date.now();
+            if (animationInterval) clearInterval(animationInterval);
             animationInterval = setInterval(() => {
                 const elapsed = (Date.now() - animationStartTime) / 1000; // segundos transcurridos
                 
                 if (elapsed < 10) {
-                    // Primeros 10 segundos: quedarse en la tienda
+                    // Primeros 10 segundos: quedarse en la tienda EXACTA
                     riderMarker.setLatLng(coords[0]);
                     const riderNombre = rider?.nombre || 'Carlos';
                     riderMarker.setPopupContent(`🛵 ${riderNombre} - Preparando pedido...`);
                 } else {
-                    // Después de 10 seg: empezar a moverse por la ruta
+                    // Después de 10 seg: empezar a moverse por la ruta REAL
                     const routeElapsed = elapsed - 10; // tiempo desde que empezó a moverse
                     const totalRouteTime = 120; // 2 minutos para completar ruta
                     const routeProgress = Math.min(routeElapsed / totalRouteTime, 1);
@@ -349,7 +393,7 @@
                         const riderNombre = rider?.nombre || 'Carlos';
                         
                         if (progress >= 100) {
-                            riderMarker.setPopupContent(`🛵 ${riderNombre} - ¡Llegó!`);
+                            riderMarker.setPopupContent(`🛵 ${riderNombre} - ¡Llegó al destino!`);
                         } else {
                             riderMarker.setPopupContent(`🛵 ${riderNombre} - ${progress}% del recorrido`);
                         }
