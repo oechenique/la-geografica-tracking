@@ -1,110 +1,477 @@
-// api/tracking.js - Endpoint para recibir datos de n8n
-let latestTrackingData = null;
-let dataTimestamp = null;
-
-export default function handler(req, res) {
-  // Configurar CORS para todos los métodos
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-  // Handle preflight OPTIONS request
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-
-  if (req.method === 'POST') {
-    // 📡 RECIBIR datos de n8n
-    try {
-      console.log('📡 POST recibido de n8n:', req.body);
-      
-      // Almacenar datos en memoria
-      latestTrackingData = req.body;
-      dataTimestamp = new Date().toISOString();
-      
-      console.log('✅ Datos almacenados correctamente');
-      
-      res.status(200).json({ 
-        success: true, 
-        message: 'Tracking data recibida y almacenada',
-        timestamp: dataTimestamp,
-        preview: {
-          pedido_id: req.body?.pedido_id || req.body?.[0]?.pedido_id,
-          cliente: req.body?.ruta_calculada?.cliente?.nombre || req.body?.[0]?.ruta_calculada?.cliente?.nombre
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🗺️ La Geográfica - Tracking Live</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { 
+            margin: 0; 
+            font-family: Arial, sans-serif; 
+            background: #f0f0f0;
         }
-      });
-      
-    } catch (error) {
-      console.error('❌ Error procesando data:', error);
-      res.status(400).json({ 
-        success: false, 
-        error: 'Error procesando data de tracking',
-        details: error.message
-      });
-    }
-  }
+        #map { 
+            height: 100vh; 
+            width: 100%; 
+        }
+        .leaflet-control-zoom {
+            display: none !important;
+        }
+        .status-panel {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000;
+            min-width: 300px;
+            border: 3px solid #28a745;
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        .logo img {
+            max-width: 140px;
+            height: auto;
+            margin-bottom: 5px;
+        }
+        .logo-text {
+            font-size: 12px;
+            color: #28a745;
+            font-weight: bold;
+        }
+        .status-text {
+            font-size: 14px;
+            color: #333;
+            margin: 8px 0;
+        }
+        .client-name {
+            font-weight: bold;
+            color: #28a745;
+            font-size: 16px;
+        }
+        .rider-status {
+            color: #007bff;
+            font-weight: bold;
+        }
+        .no-data {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+        }
+        .eta {
+            background: #28a745;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            text-align: center;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        .webhook-info {
+            background: #e3f2fd;
+            border: 1px solid #2196f3;
+            border-radius: 8px;
+            padding: 10px;
+            margin-top: 15px;
+            font-size: 11px;
+            color: #1976d2;
+        }
+        .connection-status {
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            margin: 10px 0;
+            text-align: center;
+        }
+        .connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="status-panel" id="statusPanel">
+        <div class="logo">
+            <img src="assets/logo-geografica.png" alt="La Geográfica" />
+            <div class="logo-text">Live Tracking</div>
+        </div>
+        
+        <div id="connectionStatus" class="connection-status disconnected">
+            🔴 Conectando...
+        </div>
+        
+        <div id="clientInfo" class="no-data">
+            Esperando pedidos...
+        </div>
+    </div>
 
-  else if (req.method === 'GET') {
-    // 🗺️ DEVOLVER datos para el mapa
-    try {
-      // Si hay datos y no son muy viejos (máximo 30 minutos)
-      const isDataFresh = dataTimestamp && 
-        (new Date() - new Date(dataTimestamp)) < 30 * 60 * 1000;
-      
-      if (latestTrackingData && isDataFresh) {
-        res.status(200).json({
-          success: true,
-          data: latestTrackingData,
-          timestamp: dataTimestamp,
-          age_minutes: Math.round((new Date() - new Date(dataTimestamp)) / 60000)
+    <script>
+        // 🗺️ MAPA limpio centrado en CABA (SIN ZOOM CONTROLS)
+        const map = L.map('map', {
+            zoomControl: false,
+            scrollWheelZoom: true,
+            doubleClickZoom: true,
+            touchZoom: true
+        }).setView([-34.6037, -58.3816], 12);
+        
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '🛵 La Geográfica - Tracking Live',
+            maxZoom: 19
+        }).addTo(map);
+
+        // 🎯 VARIABLES GLOBALES
+        let currentRoute = null;
+        let currentMarkers = [];
+        let riderMarker = null;
+        let animationInterval = null;
+        let autoCleanTimer = null;
+        let pollInterval = null;
+
+        // 🧹 LIMPIAR MAPA
+        function clearMap() {
+            if (currentRoute) map.removeLayer(currentRoute);
+            currentMarkers.forEach(marker => map.removeLayer(marker));
+            if (riderMarker) map.removeLayer(riderMarker);
+            if (animationInterval) clearInterval(animationInterval);
+            
+            currentRoute = null;
+            currentMarkers = [];
+            riderMarker = null;
+            
+            document.getElementById('clientInfo').innerHTML = '<div class="no-data">Esperando pedidos...</div>';
+        }
+
+        // 🔧 DEDUPLICAR COORDENADAS (mismo que tu Python)
+        function dedupeCoords(coords) {
+            const seen = new Set();
+            const output = [];
+            for (const coord of coords) {
+                const key = `${coord[0]},${coord[1]}`;
+                if (!seen.has(key)) {
+                    output.push(coord);
+                    seen.add(key);
+                }
+            }
+            return output;
+        }
+
+        // 📏 HAVERSINE DISTANCE (mismo que tu Python)
+        function haversineKm(lat1, lon1, lat2, lon2) {
+            const R = 6371.0088;
+            const dlat = (lat2 - lat1) * Math.PI / 180;
+            const dlon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dlat/2) * Math.sin(dlat/2) +
+                     Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                     Math.sin(dlon/2) * Math.sin(dlon/2);
+            return 2 * R * Math.asin(Math.sqrt(a));
+        }
+
+        // 🧭 NEAREST NEIGHBOR PATH (exactamente como tu Python)
+        function nearestNeighborPath(latlonPoints, startIdx = 0) {
+            const n = latlonPoints.length;
+            if (n <= 1) return latlonPoints;
+            
+            const unvisited = new Set(Array.from({length: n}, (_, i) => i));
+            const order = [startIdx];
+            unvisited.delete(startIdx);
+            
+            while (unvisited.size > 0) {
+                const last = order[order.length - 1];
+                let nextIdx = -1;
+                let minDist = Infinity;
+                
+                for (const j of unvisited) {
+                    const dist = haversineKm(
+                        latlonPoints[last][0], latlonPoints[last][1],
+                        latlonPoints[j][0], latlonPoints[j][1]
+                    );
+                    if (dist < minDist) {
+                        minDist = dist;
+                        nextIdx = j;
+                    }
+                }
+                
+                order.push(nextIdx);
+                unvisited.delete(nextIdx);
+            }
+            
+            return order.map(i => latlonPoints[i]);
+        }
+
+        // 🗺️ MOSTRAR TRACKING
+        function showTracking(data) {
+            clearMap();
+            
+            const trackingData = Array.isArray(data) ? data[0] : data;
+            const ruta = trackingData.ruta_calculada?.ruta;
+            const cliente = trackingData.ruta_calculada?.cliente;
+            const tienda = trackingData.ruta_calculada?.tienda;
+            const rider = trackingData.rider;
+            
+            if (!ruta || !cliente || !tienda) {
+                console.error('Datos incompletos:', trackingData);
+                return;
+            }
+
+            // 📍 PROCESAR COORDENADAS CON NEAREST NEIGHBOR (PARA LÍNEA PERFECTA)
+            let coords = ruta.coordenadas_array || [];
+            
+            // Convertir a [lat, lon] (de [lon, lat])
+            coords = coords.map(c => [c[1], c[0]]);
+            
+            // Deduplicar
+            coords = dedupeCoords(coords);
+            
+            // Aplicar nearest neighbor para línea perfecta
+            coords = nearestNeighborPath(coords, 0);
+            
+            console.log(`🗺️ Procesadas ${coords.length} coordenadas con Nearest Neighbor`);
+
+            // 🗺️ RUTA (VERDE como La Geográfica)
+            currentRoute = L.polyline(coords, {
+                color: '#28a745',
+                weight: 6,
+                opacity: 0.9
+            }).addTo(map);
+
+            // 🏪 TIENDA (ICONO GRANDE DE LOCAL)
+            const tiendaMarker = L.marker([tienda.lat, tienda.lon], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                        <svg width="50" height="50" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="25" cy="25" r="22" fill="#28a745" stroke="white" stroke-width="4"/>
+                            <g transform="translate(25,25)">
+                                <path d="M-12,-8 L12,-8 L10,0 L8,8 L-8,8 L-10,0 Z" fill="white"/>
+                                <rect x="-10" y="-2" width="20" height="3" fill="#28a745"/>
+                                <rect x="-8" y="2" width="16" height="4" fill="white"/>
+                                <circle cx="0" cy="-6" r="2" fill="white"/>
+                            </g>
+                        </svg>
+                    `),
+                    iconSize: [50, 50],
+                    iconAnchor: [25, 25]
+                })
+            }).bindPopup(`
+                <div style="text-align: center; font-weight: bold; color: #28a745;">
+                    🏪 TIENDA<br>
+                    <strong>${tienda.nombre}</strong><br>
+                    <small>${tienda.direccion}</small>
+                </div>
+            `).addTo(map);
+
+            // 🏠 CLIENTE (ICONO GRANDE DE CASA)
+            const clienteMarker = L.marker([cliente.lat, cliente.lon], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                        <svg width="50" height="50" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="25" cy="25" r="22" fill="#dc3545" stroke="white" stroke-width="4"/>
+                            <g transform="translate(25,25)">
+                                <path d="M-10,2 L0,-8 L10,2 L10,10 L-10,10 Z" fill="white"/>
+                                <rect x="-8" y="0" width="16" height="10" fill="white"/>
+                                <rect x="-6" y="2" width="5" height="6" fill="#dc3545"/>
+                                <rect x="1" y="4" width="3" height="4" fill="#dc3545"/>
+                                <circle cx="2.5" cy="5.5" r="0.5" fill="white"/>
+                                <path d="M-10,2 L0,-8 L10,2" stroke="#dc3545" stroke-width="2" fill="none"/>
+                            </g>
+                        </svg>
+                    `),
+                    iconSize: [50, 50],
+                    iconAnchor: [25, 25]
+                })
+            }).bindPopup(`
+                <div style="text-align: center; font-weight: bold; color: #dc3545;">
+                    🏠 DESTINO<br>
+                    <strong>${cliente.nombre}</strong><br>
+                    <small>${cliente.direccion}</small>
+                </div>
+            `).addTo(map);
+
+            // 🛵 RIDER ANIMADO (EMPIEZA EN TIENDA, SALTA DE PUNTO EN PUNTO)
+            const tiendaPosition = [tienda.lat, tienda.lon];
+            let currentStep = 0;
+            riderMarker = L.marker(tiendaPosition, {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                        <svg width="35" height="35" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="17.5" cy="17.5" r="15" fill="#007bff" stroke="white" stroke-width="3"/>
+                            <g transform="translate(17.5,17.5)">
+                                <circle cx="-3" cy="-2" r="6" fill="white"/>
+                                <circle cx="5" cy="-2" r="6" fill="white"/>
+                                <rect x="-8" y="-5" width="16" height="6" rx="3" fill="white"/>
+                                <circle cx="-3" cy="-2" r="3" fill="#007bff"/>
+                                <circle cx="5" cy="-2" r="3" fill="#007bff"/>
+                                <rect x="-1" y="-8" width="2" height="6" fill="white"/>
+                            </g>
+                        </svg>
+                    `),
+                    iconSize: [35, 35],
+                    iconAnchor: [17.5, 17.5]
+                })
+            }).bindPopup(`🛵 ${rider?.nombre || 'Rider'} en la tienda`).addTo(map);
+
+            currentMarkers = [tiendaMarker, clienteMarker];
+
+            // 🎬 RIDER SALTA DE PUNTO EN PUNTO (NO SIGUE LA LÍNEA)
+            let animationStartTime = Date.now();
+            if (animationInterval) clearInterval(animationInterval);
+            animationInterval = setInterval(() => {
+                const elapsed = (Date.now() - animationStartTime) / 1000;
+                
+                if (elapsed < 10) {
+                    // Primeros 10 segundos: quedarse en la tienda
+                    riderMarker.setLatLng(tiendaPosition);
+                    const riderNombre = rider?.nombre || 'Carlos';
+                    riderMarker.setPopupContent(`🛵 ${riderNombre} - Preparando pedido...`);
+                } else {
+                    // Después de 10 seg: saltar de punto en punto
+                    const routeElapsed = elapsed - 10;
+                    const jumpInterval = 3; // Saltar cada 3 segundos
+                    const totalJumps = Math.floor(routeElapsed / jumpInterval);
+                    
+                    // Calcular índice actual (no exceder el array)
+                    currentStep = Math.min(totalJumps, coords.length - 1);
+                    
+                    if (currentStep < coords.length) {
+                        riderMarker.setLatLng(coords[currentStep]);
+                        
+                        const progress = Math.round((currentStep / (coords.length - 1)) * 100);
+                        const riderNombre = rider?.nombre || 'Carlos';
+                        
+                        if (progress >= 100) {
+                            riderMarker.setPopupContent(`🛵 ${riderNombre} - ¡Llegó al destino!`);
+                        } else {
+                            riderMarker.setPopupContent(`🛵 ${riderNombre} - ${progress}% del recorrido`);
+                        }
+                    }
+                }
+            }, 1000); // Verificar cada segundo
+
+            // 📱 ACTUALIZAR PANEL CON ESTADOS DINÁMICOS
+            const eta = trackingData.eta_minutos || Math.round(ruta.tiempo_calculado_minutos);
+            const riderNombre = rider?.nombre || 'Carlos';
+            
+            // Estados que cambian con el tiempo
+            let statusStartTime = Date.now();
+            
+            function updateStatus() {
+                const elapsed = (Date.now() - statusStartTime) / 1000;
+                let currentStatus = '';
+                
+                if (elapsed < 10) {
+                    currentStatus = `
+                        <div class="status-text">📍 Recibimos tu pedido</div>
+                        <div class="status-text">🔄 Estamos preparando tu pedido</div>
+                        <div class="status-text" style="color: #007bff;">⏳ ${riderNombre} llegó al local</div>
+                    `;
+                } else {
+                    currentStatus = `
+                        <div class="status-text">✅ Pedido preparado</div>
+                        <div class="status-text">✅ ${riderNombre} recogió el pedido</div>
+                        <div class="rider-status">🛵 ${riderNombre} está yendo a tu domicilio</div>
+                    `;
+                }
+                
+                document.getElementById('clientInfo').innerHTML = `
+                    <div class="client-name">¡Hola ${cliente.nombre}!</div>
+                    ${currentStatus}
+                    <div class="eta">⏱️ Llegada estimada: ${eta} minutos</div>
+                    <div class="status-text" style="font-size: 11px; color: #666; margin-top: 10px;">
+                        Ruta optimizada • ${coords.length} puntos de seguimiento
+                    </div>
+                `;
+            }
+            
+            // Actualizar status inicial
+            updateStatus();
+            
+            // Actualizar status cada 5 segundos
+            const statusUpdateInterval = setInterval(updateStatus, 5000);
+            
+            // Limpiar interval cuando se limpia el mapa
+            if (autoCleanTimer) clearTimeout(autoCleanTimer);
+            autoCleanTimer = setTimeout(() => {
+                clearInterval(statusUpdateInterval);
+                clearMap();
+                map.setView([-34.6037, -58.3816], 12);
+            }, 10 * 60 * 1000);
+
+            // 🎯 ZOOM automático para mostrar toda la ruta
+            const group = L.featureGroup([tiendaMarker, clienteMarker, currentRoute]);
+            map.fitBounds(group.getBounds().pad(0.1));
+
+            // ⏰ AUTO-LIMPIAR después de 10 minutos
+            if (autoCleanTimer) clearTimeout(autoCleanTimer);
+            autoCleanTimer = setTimeout(() => {
+                clearMap();
+                map.setView([-34.6037, -58.3816], 12);
+            }, 10 * 60 * 1000);
+        }
+
+        // 📡 POLLING PARA OBTENER DATOS
+        async function pollTrackingData() {
+            try {
+                const response = await fetch('/api/tracking');
+                const result = await response.json();
+                
+                if (result.success && result.data) {
+                    console.log('📡 Data encontrada:', result.data);
+                    showTracking(result.data);
+                    updateConnectionStatus(true);
+                } else {
+                    updateConnectionStatus(true);
+                }
+            } catch (error) {
+                console.error('Error polling data:', error);
+                updateConnectionStatus(false);
+            }
+        }
+
+        // 🔗 ACTUALIZAR STATUS DE CONEXIÓN
+        function updateConnectionStatus(connected) {
+            const statusElement = document.getElementById('connectionStatus');
+            if (connected) {
+                statusElement.className = 'connection-status connected';
+                statusElement.textContent = '🟢 Conectado - Escuchando n8n';
+            } else {
+                statusElement.className = 'connection-status disconnected';
+                statusElement.textContent = '🔴 Error de conexión';
+            }
+        }
+
+        // 🚀 INICIALIZAR
+        function init() {
+            console.log('🗺️ La Geográfica Live Tracking iniciado');
+            
+            // Iniciar polling cada 3 segundos
+            pollInterval = setInterval(pollTrackingData, 3000);
+            
+            // Primera verificación inmediata
+            pollTrackingData();
+        }
+
+        // 🎬 INICIAR cuando carga la página
+        init();
+
+        // 🧹 LIMPIAR al cerrar
+        window.addEventListener('beforeunload', () => {
+            if (pollInterval) clearInterval(pollInterval);
+            if (animationInterval) clearInterval(animationInterval);
+            if (autoCleanTimer) clearTimeout(autoCleanTimer);
         });
-      } else {
-        // No hay datos o son muy viejos
-        res.status(200).json({
-          success: true,
-          data: null,
-          message: latestTrackingData ? 'Datos expirados' : 'Sin datos disponibles',
-          timestamp: null
-        });
-      }
-      
-    } catch (error) {
-      console.error('❌ Error devolviendo data:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Error interno del servidor' 
-      });
-    }
-  }
-
-  else if (req.method === 'DELETE') {
-    // 🧹 LIMPIAR datos almacenados
-    try {
-      latestTrackingData = null;
-      dataTimestamp = null;
-      
-      console.log('🧹 Datos de tracking limpiados');
-      
-      res.status(200).json({
-        success: true,
-        message: 'Datos de tracking limpiados correctamente'
-      });
-      
-    } catch (error) {
-      console.error('❌ Error limpiando data:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Error limpiando datos' 
-      });
-    }
-  }
-
-  else {
-    // Método no permitido
-    res.status(405).json({ 
-      success: false,
-      error: 'Método no permitido. Use GET o POST.' 
-    });
-  }
-}
+    </script>
+</body>
+</html>
