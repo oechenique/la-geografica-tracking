@@ -227,25 +227,26 @@
                 return;
             }
 
-            // 📍 PROCESAR COORDENADAS CON RUTA REAL (NO NEAREST NEIGHBOR)
-            // 1) Leer coords: PRIORIDAD al LineString real
-            let coordsLonLat = [];
+            // 📍 USAR RUTA REAL DE PGROUTING (YA ORDENADA)
+            let coords = [];
+            
+            // 1) PRIORIDAD: geometria_completa (ruta real ya ordenada)
             const geom = trackingData?.ruta_calculada?.ruta?.geometria_completa?.geometry;
             if (geom?.type === 'LineString' && Array.isArray(geom.coordinates)) {
-                coordsLonLat = geom.coordinates;            // [lon, lat]
+                // Esta es la ruta REAL de pgRouting - YA está ordenada correctamente
+                coords = geom.coordinates.map(([lon, lat]) => [lat, lon]);
+                console.log(`🗺️ Usando ruta REAL de pgRouting (${coords.length} puntos)`);
             } else {
-                // fallback: coordenadas_array (si existiera)
-                const arr = trackingData?.ruta_calculada?.ruta?.coordenadas_array
-                         || trackingData?.ruta_calculada?.coordenadas_array
-                         || [];
-                coordsLonLat = arr;
+                // FALLBACK: solo si no existe geometria_completa
+                let coordsArray = ruta.coordenadas_array || [];
+                coords = coordsArray.map(c => [c[1], c[0]]);
+                coords = dedupeCoords(coords);
+                coords = nearestNeighborPath(coords, 0);
+                console.log(`⚠️ Fallback: usando nearest neighbor (${coords.length} puntos)`);
             }
 
-            // 2) Convertir a [lat, lon]
-            let coords = coordsLonLat.map(([lon, lat]) => [lat, lon]);
-
-            // 3) Dedup suave por tolerancia
-            function dedupeTol(latlng, tolM = 2) {
+            // 2) Dedup suave para quitar puntos muy cercanos
+            function dedupeTol(latlng, tolM = 1.5) {
                 const out = []; let prev = null;
                 const toRad = d => d * Math.PI / 180, R = 6371008.8;
                 for (const p of latlng) {
@@ -259,29 +260,27 @@
             }
             coords = dedupeTol(coords, 1.5);
 
-            // 4) Asegurar dirección: inicio≈tienda, fin≈cliente (si no, invertimos)
+            // 3) Verificar dirección (tienda → cliente)
+            const tiendaLL = [tienda.lat, tienda.lon];
+            const clienteLL = [cliente.lat, cliente.lon];
+            
             function distM(a, b) {
                 const toRad = d => d * Math.PI / 180, R = 6371008.8;
                 const dlat = toRad(b[0] - a[0]), dlon = toRad(b[1] - a[1]);
                 const x = Math.sin(dlat / 2) ** 2 + Math.cos(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.sin(dlon / 2) ** 2;
                 return 2 * R * Math.asin(Math.sqrt(x));
             }
-            const tiendaLL = [tienda.lat, tienda.lon];
-            const clienteLL = [cliente.lat, cliente.lon];
 
             const dStartTienda = distM(coords[0], tiendaLL);
             const dEndTienda = distM(coords[coords.length - 1], tiendaLL);
 
-            // si la punta más cercana a tienda es el final, damos vuelta
-            if (dEndTienda < dStartTienda) coords.reverse();
+            // Si está invertida, darla vuelta
+            if (dEndTienda < dStartTienda) {
+                coords.reverse();
+                console.log(`🔄 Ruta invertida para ir tienda → cliente`);
+            }
 
-            // 5) Forzar extremos exactos si están lejos (>30 m)
-            if (distM(coords[0], tiendaLL) > 30) coords.unshift(tiendaLL);
-            if (distM(coords[coords.length - 1], clienteLL) > 30) coords.push(clienteLL);
-            
-            console.log(`🗺️ Procesadas ${coords.length} coordenadas de la ruta real (LineString)`);
-            console.log(`🏪 Inicio: tienda (${tiendaLL})`);
-            console.log(`🏠 Final: cliente (${clienteLL})`);
+            console.log(`✅ Ruta final: ${coords.length} puntos optimizados`);
 
             // 🗺️ RUTA (VERDE como La Geográfica)
             currentRoute = L.polyline(coords, {
