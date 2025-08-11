@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🗺️ La Geográfica - Tracking Live</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { 
+            margin: 0; 
+            font-family: Arial, sans-serif; 
+            background: #f0f0f0;
+        }
+        #map { 
+            height: 100vh; 
+            width: 100%; 
+        }
+        .status-panel {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000;
+            min-width: 250px;
+            border: 3px solid #28a745;
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        .logo img {
+            max-width: 120px;
+            height: auto;
+        }
+        .status-text {
+            font-size: 14px;
+            color: #333;
+            margin: 8px 0;
+        }
+        .client-name {
+            font-weight: bold;
+            color: #28a745;
+            font-size: 16px;
+        }
+        .rider-status {
+            color: #007bff;
+            font-weight: bold;
+        }
+        .no-data {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+        }
+        .eta {
+            background: #28a745;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            text-align: center;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="status-panel" id="statusPanel">
+        <div class="logo">
+            <img src="./assets/logo-geografica.png" alt="La Geográfica" style="max-width: 120px; height: auto;" />
+        </div>
+        
+        <div id="clientInfo" class="no-data">
+            Esperando pedidos...
+        </div>
+    </div>
+
+    <script>
+        // 🗺️ CONFIGURACIÓN MAPA - Centrado en CABA sin data
+        const map = L.map('map').setView([-34.6037, -58.3816], 12);
+        
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '🛵 La Geográfica - Tracking Live',
+            maxZoom: 19
+        }).addTo(map);
+
+        // 🎯 VARIABLES GLOBALES
+        let currentRoute = null;
+        let currentMarkers = [];
+        let riderMarker = null;
+        let animationInterval = null;
+        let autoCleanTimer = null;
+
+        // 🧹 LIMPIAR MAPA
+        function clearMap() {
+            if (currentRoute) map.removeLayer(currentRoute);
+            currentMarkers.forEach(marker => map.removeLayer(marker));
+            if (riderMarker) map.removeLayer(riderMarker);
+            if (animationInterval) clearInterval(animationInterval);
+            
+            currentRoute = null;
+            currentMarkers = [];
+            riderMarker = null;
+            
+            document.getElementById('clientInfo').innerHTML = '<div class="no-data">Esperando pedidos...</div>';
+        }
+
+        // 🔧 DEDUPLICAR COORDENADAS (tu algoritmo)
+        function dedupeCoords(coords) {
+            const seen = new Set();
+            return coords.filter(coord => {
+                const key = `${coord[0]},${coord[1]}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        }
+
+        // 🧭 NEAREST NEIGHBOR (tu algoritmo)
+        function nearestNeighborPath(coords) {
+            if (coords.length <= 1) return coords;
+            
+            const unvisited = new Set(Array.from({length: coords.length}, (_, i) => i));
+            const path = [0];
+            unvisited.delete(0);
+            
+            while (unvisited.size > 0) {
+                const lastIdx = path[path.length - 1];
+                const lastCoord = coords[lastIdx];
+                
+                let nearestIdx = -1;
+                let minDist = Infinity;
+                
+                for (const idx of unvisited) {
+                    const coord = coords[idx];
+                    const dist = Math.sqrt(
+                        Math.pow(coord[0] - lastCoord[0], 2) + 
+                        Math.pow(coord[1] - lastCoord[1], 2)
+                    );
+                    if (dist < minDist) {
+                        minDist = dist;
+                        nearestIdx = idx;
+                    }
+                }
+                
+                path.push(nearestIdx);
+                unvisited.delete(nearestIdx);
+            }
+            
+            return path.map(idx => coords[idx]);
+        }
+
+        // 🗺️ PROCESAR Y MOSTRAR TRACKING
+        function showTracking(data) {
+            clearMap();
+            
+            const trackingData = data[0] || data;
+            const ruta = trackingData.ruta_calculada?.ruta;
+            const cliente = trackingData.ruta_calculada?.cliente;
+            const tienda = trackingData.ruta_calculada?.tienda;
+            const rider = trackingData.rider;
+            
+            if (!ruta || !cliente || !tienda) {
+                console.error('Datos incompletos');
+                return;
+            }
+
+            // 📍 PROCESAR COORDENADAS (tu método)
+            let coords = ruta.coordenadas_array || [];
+            coords = coords.map(c => [c[1], c[0]]); // lon,lat → lat,lon
+            coords = dedupeCoords(coords);
+            coords = nearestNeighborPath(coords);
+
+            // 🗺️ RUTA (línea transparente)
+            currentRoute = L.polyline(coords, {
+                color: '#007bff',
+                weight: 4,
+                opacity: 0.6
+            }).addTo(map);
+
+            // 🏪 TIENDA
+            const tiendaMarker = L.marker([tienda.lat, tienda.lon], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                        <svg width="30" height="30" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="15" cy="15" r="12" fill="#28a745" stroke="white" stroke-width="3"/>
+                            <text x="15" y="20" text-anchor="middle" font-size="14" fill="white">🏪</text>
+                        </svg>
+                    `),
+                    iconSize: [30, 30],
+                    iconAnchor: [15, 15]
+                })
+            }).bindPopup(`🏪 ${tienda.nombre}<br>${tienda.direccion}`).addTo(map);
+
+            // 👤 CLIENTE
+            const clienteMarker = L.marker([cliente.lat, cliente.lon], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                        <svg width="30" height="30" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="15" cy="15" r="12" fill="#dc3545" stroke="white" stroke-width="3"/>
+                            <text x="15" y="20" text-anchor="middle" font-size="14" fill="white">👤</text>
+                        </svg>
+                    `),
+                    iconSize: [30, 30],
+                    iconAnchor: [15, 15]
+                })
+            }).bindPopup(`👤 ${cliente.nombre}<br>${cliente.direccion}`).addTo(map);
+
+            // 🛵 RIDER ANIMADO
+            let currentStep = 0;
+            riderMarker = L.marker(coords[0], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml;base64,' + btoa(`
+                        <svg width="25" height="25" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="12.5" cy="12.5" r="10" fill="#007bff" stroke="white" stroke-width="2"/>
+                            <text x="12.5" y="17" text-anchor="middle" font-size="12" fill="white">🛵</text>
+                        </svg>
+                    `),
+                    iconSize: [25, 25],
+                    iconAnchor: [12.5, 12.5]
+                })
+            }).bindPopup(`🛵 ${rider?.nombre || 'Rider'}`).addTo(map);
+
+            currentMarkers = [tiendaMarker, clienteMarker];
+
+            // 🎬 ANIMACIÓN RIDER
+            animationInterval = setInterval(() => {
+                currentStep = (currentStep + 1) % coords.length;
+                riderMarker.setLatLng(coords[currentStep]);
+            }, 2000); // Cada 2 segundos
+
+            // 📱 ACTUALIZAR PANEL
+            const eta = trackingData.eta_minutos || Math.round(ruta.tiempo_calculado_minutos);
+            document.getElementById('clientInfo').innerHTML = `
+                <div class="client-name">Hola ${cliente.nombre}!</div>
+                <div class="status-text">📍 Recibimos tu pedido</div>
+                <div class="status-text">🔄 Estamos preparando tu pedido</div>
+                <div class="status-text">🛵 El rider llegó a la tienda</div>
+                <div class="rider-status">${rider?.nombre || 'Carlos'} está en camino</div>
+                <div class="eta">⏱️ Llegada: ${eta} minutos</div>
+            `;
+
+            // 🎯 AUTO-FIT MAPA
+            const group = L.featureGroup([tiendaMarker, clienteMarker, currentRoute]);
+            map.fitBounds(group.getBounds().pad(0.1));
+
+            // ⏰ AUTO-LIMPIAR EN 10 MINUTOS
+            if (autoCleanTimer) clearTimeout(autoCleanTimer);
+            autoCleanTimer = setTimeout(() => {
+                clearMap();
+                map.setView([-34.6037, -58.3816], 13);
+            }, 10 * 60 * 1000); // 10 minutos
+        }
+
+        // 🌐 SIMULAR RECEPCIÓN DE DATOS (reemplazar con WebSocket/API)
+        function simulateDataReceived() {
+            // DATOS DE EJEMPLO (usar los reales de n8n)
+            const sampleData = [{
+                "ruta_calculada": {
+                    "tienda": {"lat": -34.56077965377718, "lon": -58.461592938922614, "nombre": "La Geográfica", "direccion": "Blanco Encalada 2680"},
+                    "cliente": {"lat": -34.5668707, "lon": -58.4623573, "nombre": "Marco Tero", "direccion": "Echeverria 3096"},
+                    "ruta": {
+                        "tiempo_calculado_minutos": 3.3,
+                        "coordenadas_array": [
+                            [-58.461592938922614,-34.56077965377718],[-58.4626763,-34.5599313],[-58.4618874,-34.5608543],
+                            [-58.4646168,-34.5576558],[-58.4639736,-34.5584201],[-58.4633896,-34.559087],
+                            [-58.4626763,-34.5599313],[-58.4652688,-34.5568681],[-58.4646168,-34.5576558],
+                            [-58.4623573,-34.5668707]
+                        ]
+                    }
+                },
+                "rider": {"nombre": "Carlos Delivery"},
+                "eta_minutos": 3
+            }];
+            
+            showTracking(sampleData);
+        }
+
+        // 🚀 ENDPOINT PARA n8n - Recibir POST
+        async function setupWebhook() {
+            // La web escucha en: /webhook-tracking
+            // n8n debe enviar POST a: https://tu-web.vercel.app/webhook-tracking
+            
+            // Esta función se activa cuando n8n envía data
+            window.receiveTrackingData = function(data) {
+                console.log('📡 Data recibida de n8n:', data);
+                showTracking(data);
+            };
+            
+            console.log('🎯 Webhook listo para recibir data de n8n');
+            console.log('📡 n8n debe enviar POST a: https://TU-WEB.vercel.app/webhook-tracking');
+        }
+
+        // 🎬 INICIALIZAR - SIN datos de muestra
+        setupWebhook();
+        
+        console.log('🗺️ La Geográfica Live Tracking iniciado - Esperando data de n8n');
+    </script>
+</body>
+</html>
