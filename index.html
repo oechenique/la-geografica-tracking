@@ -325,41 +325,50 @@
             currentMarkers = [tiendaMarker, clienteMarker];
 
             // 🎬 ANIMACIÓN RIDER siguiendo la ruta ordenada
-            let startTime = Date.now();
+            let animationStartTime = Date.now();
             animationInterval = setInterval(() => {
-                const elapsed = (Date.now() - startTime) / 1000; // segundos transcurridos
+                const elapsed = (Date.now() - animationStartTime) / 1000; // segundos transcurridos
                 
-                if (elapsed < 40) {
-                    // Primeros 40 segundos: quedarse en la tienda
+                if (elapsed < 10) {
+                    // Primeros 10 segundos: quedarse en la tienda
                     riderMarker.setLatLng(coords[0]);
                     const riderNombre = rider?.nombre || 'Carlos';
                     riderMarker.setPopupContent(`🛵 ${riderNombre} - Preparando pedido...`);
                 } else {
-                    // Después de 40 seg: empezar a moverse por la ruta
-                    const routeProgress = Math.min((elapsed - 40) / 180, 1); // 3 minutos para completar ruta
+                    // Después de 10 seg: empezar a moverse por la ruta
+                    const routeElapsed = elapsed - 10; // tiempo desde que empezó a moverse
+                    const totalRouteTime = 120; // 2 minutos para completar ruta
+                    const routeProgress = Math.min(routeElapsed / totalRouteTime, 1);
+                    
                     const targetIndex = Math.floor(routeProgress * (coords.length - 1));
                     
-                    currentStep = targetIndex;
-                    riderMarker.setLatLng(coords[currentStep]);
-                    
-                    const progress = Math.round(routeProgress * 100);
-                    const riderNombre = rider?.nombre || 'Carlos';
-                    riderMarker.setPopupContent(`🛵 ${riderNombre} - ${progress}% del recorrido`);
+                    if (targetIndex < coords.length) {
+                        riderMarker.setLatLng(coords[targetIndex]);
+                        
+                        const progress = Math.round(routeProgress * 100);
+                        const riderNombre = rider?.nombre || 'Carlos';
+                        
+                        if (progress >= 100) {
+                            riderMarker.setPopupContent(`🛵 ${riderNombre} - ¡Llegó!`);
+                        } else {
+                            riderMarker.setPopupContent(`🛵 ${riderNombre} - ${progress}% del recorrido`);
+                        }
+                    }
                 }
-            }, 1000); // Cada segundo para suavidad
+            }, 500); // Cada medio segundo para más suavidad
 
             // 📱 ACTUALIZAR PANEL CON ESTADOS DINÁMICOS
             const eta = trackingData.eta_minutos || Math.round(ruta.tiempo_calculado_minutos);
             const riderNombre = rider?.nombre || 'Carlos';
             
             // Estados que cambian con el tiempo
-            let statusText = '';
+            let statusStartTime = Date.now();
             
             function updateStatus() {
-                const elapsed = (Date.now() - Date.now()) / 1000; // se resetea cada vez
+                const elapsed = (Date.now() - statusStartTime) / 1000;
                 let currentStatus = '';
                 
-                if (elapsed < 40) {
+                if (elapsed < 10) {
                     currentStatus = `
                         <div class="status-text">📍 Recibimos tu pedido</div>
                         <div class="status-text">🔄 Estamos preparando tu pedido</div>
@@ -386,8 +395,8 @@
             // Actualizar status inicial
             updateStatus();
             
-            // Actualizar status cada 10 segundos
-            const statusUpdateInterval = setInterval(updateStatus, 10000);
+            // Actualizar status cada 5 segundos
+            const statusUpdateInterval = setInterval(updateStatus, 5000);
             
             // Limpiar interval cuando se limpia el mapa
             if (autoCleanTimer) clearTimeout(autoCleanTimer);
