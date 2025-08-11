@@ -227,60 +227,19 @@
                 return;
             }
 
-            // 📍 USAR RUTA REAL DE PGROUTING (YA ORDENADA)
-            let coords = [];
+            // 📍 PROCESAR COORDENADAS CON NEAREST NEIGHBOR (PARA LÍNEA PERFECTA)
+            let coords = ruta.coordenadas_array || [];
             
-            // 1) PRIORIDAD: geometria_completa (ruta real ya ordenada)
-            const geom = trackingData?.ruta_calculada?.ruta?.geometria_completa?.geometry;
-            if (geom?.type === 'LineString' && Array.isArray(geom.coordinates)) {
-                // Esta es la ruta REAL de pgRouting - YA está ordenada correctamente
-                coords = geom.coordinates.map(([lon, lat]) => [lat, lon]);
-                console.log(`🗺️ Usando ruta REAL de pgRouting (${coords.length} puntos)`);
-            } else {
-                // FALLBACK: solo si no existe geometria_completa
-                let coordsArray = ruta.coordenadas_array || [];
-                coords = coordsArray.map(c => [c[1], c[0]]);
-                coords = dedupeCoords(coords);
-                coords = nearestNeighborPath(coords, 0);
-                console.log(`⚠️ Fallback: usando nearest neighbor (${coords.length} puntos)`);
-            }
-
-            // 2) Dedup suave para quitar puntos muy cercanos
-            function dedupeTol(latlng, tolM = 1.5) {
-                const out = []; let prev = null;
-                const toRad = d => d * Math.PI / 180, R = 6371008.8;
-                for (const p of latlng) {
-                    if (!prev) { out.push(p); prev = p; continue; }
-                    const dlat = toRad(p[0] - prev[0]), dlon = toRad(p[1] - prev[1]);
-                    const a = Math.sin(dlat / 2) ** 2 + Math.cos(toRad(prev[0])) * Math.cos(toRad(p[0])) * Math.sin(dlon / 2) ** 2;
-                    const d = 2 * R * Math.asin(Math.sqrt(a));
-                    if (d > tolM) { out.push(p); prev = p; }
-                }
-                return out;
-            }
-            coords = dedupeTol(coords, 1.5);
-
-            // 3) Verificar dirección (tienda → cliente)
-            const tiendaLL = [tienda.lat, tienda.lon];
-            const clienteLL = [cliente.lat, cliente.lon];
+            // Convertir a [lat, lon] (de [lon, lat])
+            coords = coords.map(c => [c[1], c[0]]);
             
-            function distM(a, b) {
-                const toRad = d => d * Math.PI / 180, R = 6371008.8;
-                const dlat = toRad(b[0] - a[0]), dlon = toRad(b[1] - a[1]);
-                const x = Math.sin(dlat / 2) ** 2 + Math.cos(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.sin(dlon / 2) ** 2;
-                return 2 * R * Math.asin(Math.sqrt(x));
-            }
-
-            const dStartTienda = distM(coords[0], tiendaLL);
-            const dEndTienda = distM(coords[coords.length - 1], tiendaLL);
-
-            // Si está invertida, darla vuelta
-            if (dEndTienda < dStartTienda) {
-                coords.reverse();
-                console.log(`🔄 Ruta invertida para ir tienda → cliente`);
-            }
-
-            console.log(`✅ Ruta final: ${coords.length} puntos optimizados`);
+            // Deduplicar
+            coords = dedupeCoords(coords);
+            
+            // Aplicar nearest neighbor para línea perfecta
+            coords = nearestNeighborPath(coords, 0);
+            
+            console.log(`🗺️ Procesadas ${coords.length} coordenadas con Nearest Neighbor`);
 
             // 🗺️ RUTA (VERDE como La Geográfica)
             currentRoute = L.polyline(coords, {
@@ -341,7 +300,7 @@
                 </div>
             `).addTo(map);
 
-            // 🛵 RIDER ANIMADO (EMPIEZA EXACTO EN TIENDA)
+            // 🛵 RIDER ANIMADO (EMPIEZA EN TIENDA, SALTA DE PUNTO EN PUNTO)
             const tiendaPosition = [tienda.lat, tienda.lon];
             let currentStep = 0;
             riderMarker = L.marker(tiendaPosition, {
@@ -366,29 +325,30 @@
 
             currentMarkers = [tiendaMarker, clienteMarker];
 
-            // 🎬 ANIMACIÓN RIDER siguiendo la ruta REAL
+            // 🎬 RIDER SALTA DE PUNTO EN PUNTO (NO SIGUE LA LÍNEA)
             let animationStartTime = Date.now();
             if (animationInterval) clearInterval(animationInterval);
             animationInterval = setInterval(() => {
-                const elapsed = (Date.now() - animationStartTime) / 1000; // segundos transcurridos
+                const elapsed = (Date.now() - animationStartTime) / 1000;
                 
                 if (elapsed < 10) {
-                    // Primeros 10 segundos: quedarse en la tienda EXACTA
-                    riderMarker.setLatLng(coords[0]);
+                    // Primeros 10 segundos: quedarse en la tienda
+                    riderMarker.setLatLng(tiendaPosition);
                     const riderNombre = rider?.nombre || 'Carlos';
                     riderMarker.setPopupContent(`🛵 ${riderNombre} - Preparando pedido...`);
                 } else {
-                    // Después de 10 seg: empezar a moverse por la ruta REAL
-                    const routeElapsed = elapsed - 10; // tiempo desde que empezó a moverse
-                    const totalRouteTime = 120; // 2 minutos para completar ruta
-                    const routeProgress = Math.min(routeElapsed / totalRouteTime, 1);
+                    // Después de 10 seg: saltar de punto en punto
+                    const routeElapsed = elapsed - 10;
+                    const jumpInterval = 3; // Saltar cada 3 segundos
+                    const totalJumps = Math.floor(routeElapsed / jumpInterval);
                     
-                    const targetIndex = Math.floor(routeProgress * (coords.length - 1));
+                    // Calcular índice actual (no exceder el array)
+                    currentStep = Math.min(totalJumps, coords.length - 1);
                     
-                    if (targetIndex < coords.length) {
-                        riderMarker.setLatLng(coords[targetIndex]);
+                    if (currentStep < coords.length) {
+                        riderMarker.setLatLng(coords[currentStep]);
                         
-                        const progress = Math.round(routeProgress * 100);
+                        const progress = Math.round((currentStep / (coords.length - 1)) * 100);
                         const riderNombre = rider?.nombre || 'Carlos';
                         
                         if (progress >= 100) {
@@ -398,7 +358,7 @@
                         }
                     }
                 }
-            }, 500); // Cada medio segundo para más suavidad
+            }, 1000); // Verificar cada segundo
 
             // 📱 ACTUALIZAR PANEL CON ESTADOS DINÁMICOS
             const eta = trackingData.eta_minutos || Math.round(ruta.tiempo_calculado_minutos);
