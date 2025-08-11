@@ -1,0 +1,9 @@
+{
+  "name": "la-geografica-tracking",
+  "version": "1.0.0",
+  "description": "Live tracking para La Geográfica",
+  "main": "index.html",
+  "scripts": {
+    "start": "echo 'Static site ready'"
+  }
+}
