@@ -1,4 +1,58 @@
-<!DOCTYPE html>
+// 📡 TESTING con tu JSON real
+        function testWithRealData() {
+            const sampleData = [
+                {
+                    "pedido_id": "GEO-1754925798980",
+                    "status": "completed_con_coordenadas",
+                    "rider": {
+                        "id": 1,
+                        "nombre": "Carlos Delivery",
+                        "lat": -34.56077965377718,
+                        "lon": -58.461592938922614
+                    },
+                    "eta_minutos": 3,
+                    "ruta_calculada": {
+                        "tienda": {
+                            "lat": -34.56077965377718,
+                            "lon": -58.461592938922614,
+                            "nombre": "RutIA Demo",
+                            "direccion": "Blanco Encalada 2680, CABA"
+                        },
+                        "cliente": {
+                            "lat": -34.5668707,
+                            "lon": -58.4623573,
+                            "nombre": "Andres Campolozano",
+                            "direccion": "echeverria 3096 caba"
+                        },
+                        "ruta": {
+                            "tiempo_calculado_minutos": 3.3,
+                            "coordenadas_array": [
+                                [-58.461592938922614,-34.56077965377718],
+                                [-58.4626763,-34.5599313],
+                                [-58.4618874,-34.5608543],
+                                [-58.4646168,-34.5576558],
+                                [-58.4639736,-34.5584201],
+                                [-58.4633896,-34.559087],
+                                [-58.4626763,-34.5599313],
+                                [-58.4652688,-34.5568681],
+                                [-58.4646168,-34.5576558],
+                                [-58.4662144,-34.5573733],
+                                [-58.4654403,-34.5569697],
+                                [-58.4671892,-34.5578786],
+                                [-58.4669021,-34.5577307],
+                                [-58.4662144,-34.5573733],
+                                [-58.4665062,-34.5586681],
+                                [-58.4669826,-34.558119],
+                                [-58.4671892,-34.5578786],
+                                [-58.4658307,-34.5594475],
+                                [-58.4665062,-34.5586681],
+                                [-58.4651694,-34.5602219],
+                                [-58.4656957,-34.5596033],
+                                [-58.4645298,-34.5610114],
+                                [-58.4651694,-34.5602219],
+                                [-58.463738,-34.5619498],
+                                [-58.4641783,-34.5614325],
+                                [-58.4644836,-34.5610903],<!DOCTYPE html>
 <html>
 <head>
     <title>🗺️ La Geográfica - Tracking Live</title>
@@ -88,8 +142,9 @@
         </div>
         
         <div class="webhook-info">
-            📡 <strong>Webhook URL:</strong><br>
-            <span id="webhookUrl">Calculando...</span>
+            📡 <strong>Webhook URL (POST):</strong><br>
+            <span id="webhookUrl">https://api.allorigins.win/get?url=</span><br>
+            <small>n8n debe enviar POST con JSON en body</small>
         </div>
     </div>
 
@@ -189,11 +244,11 @@
             coords = dedupeCoords(coords);
             coords = nearestNeighborPath(coords);
 
-            // 🗺️ RUTA
+            // 🗺️ RUTA (VERDE como La Geográfica)
             currentRoute = L.polyline(coords, {
-                color: '#007bff',
+                color: '#28a745',
                 weight: 4,
-                opacity: 0.6
+                opacity: 0.7
             }).addTo(map);
 
             // 🏪 TIENDA
@@ -289,17 +344,48 @@
             }
         }
 
+        // 📡 WEBHOOK via CORS Proxy + localStorage
+        function setupWebhook() {
+            // Escuchar mensajes cross-origin
+            window.addEventListener('message', function(event) {
+                if (event.data && event.data.type === 'TRACKING_DATA') {
+                    console.log('📡 Data recibida via webhook:', event.data.payload);
+                    showTracking(event.data.payload);
+                }
+            });
+
+            // Polling localStorage para data de webhook
+            setInterval(() => {
+                const webhookData = localStorage.getItem('rutia_tracking_data');
+                if (webhookData) {
+                    try {
+                        const data = JSON.parse(webhookData);
+                        console.log('📡 Data encontrada en localStorage:', data);
+                        showTracking(data);
+                        localStorage.removeItem('rutia_tracking_data'); // Limpiar
+                    } catch (error) {
+                        console.error('Error parsing webhook data:', error);
+                    }
+                }
+            }, 2000);
+        }
+
         // 🚀 INICIALIZAR
         function init() {
-            // Mostrar webhook URL
-            const currentUrl = window.location.href.split('?')[0];
-            document.getElementById('webhookUrl').textContent = currentUrl + '?tracking={{JSON_DATA}}';
+            // Webhook URL para n8n
+            const webhookUrl = 'https://webhook.site/#!/unique-id'; // Reemplazar con URL real
+            document.getElementById('webhookUrl').innerHTML = `
+                <code>${webhookUrl}</code><br>
+                <small>Configurar en n8n como POST request</small>
+            `;
             
-            // Verificar data en URL
+            // Setup webhook listener
+            setupWebhook();
+            
+            // Verificar data en URL (fallback)
             checkForTrackingData();
             
             console.log('🗺️ La Geográfica Live Tracking iniciado');
-            console.log('📡 n8n puede enviar data via: ' + currentUrl + '?tracking={{JSON_DATA}}');
         }
 
         // 🎬 INICIAR
