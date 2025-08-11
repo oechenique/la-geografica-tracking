@@ -5,7 +5,7 @@ let dataTimestamp = null;
 export default function handler(req, res) {
   // Configurar CORS para todos los métodos
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   // Handle preflight OPTIONS request
@@ -74,6 +74,28 @@ export default function handler(req, res) {
       res.status(500).json({ 
         success: false, 
         error: 'Error interno del servidor' 
+      });
+    }
+  }
+
+  else if (req.method === 'DELETE') {
+    // 🧹 LIMPIAR datos almacenados
+    try {
+      latestTrackingData = null;
+      dataTimestamp = null;
+      
+      console.log('🧹 Datos de tracking limpiados');
+      
+      res.status(200).json({
+        success: true,
+        message: 'Datos de tracking limpiados correctamente'
+      });
+      
+    } catch (error) {
+      console.error('❌ Error limpiando data:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Error limpiando datos' 
       });
     }
   }
