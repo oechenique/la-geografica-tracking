@@ -64,6 +64,15 @@
             margin-top: 10px;
             font-weight: bold;
         }
+        .webhook-info {
+            background: #e3f2fd;
+            border: 1px solid #2196f3;
+            border-radius: 8px;
+            padding: 10px;
+            margin-top: 15px;
+            font-size: 11px;
+            color: #1976d2;
+        }
     </style>
 </head>
 <body>
@@ -71,16 +80,21 @@
     
     <div class="status-panel" id="statusPanel">
         <div class="logo">
-            <img src="./assets/logo-geografica.png" alt="La Geográfica" style="max-width: 120px; height: auto;" />
+            <img src="assets/logo-geografica.png" alt="La Geográfica" />
         </div>
         
         <div id="clientInfo" class="no-data">
             Esperando pedidos...
         </div>
+        
+        <div class="webhook-info">
+            📡 <strong>Webhook URL:</strong><br>
+            <span id="webhookUrl">Calculando...</span>
+        </div>
     </div>
 
     <script>
-        // 🗺️ CONFIGURACIÓN MAPA - Centrado en CABA sin data
+        // 🗺️ MAPA limpio centrado en CABA
         const map = L.map('map').setView([-34.6037, -58.3816], 12);
         
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
@@ -109,7 +123,7 @@
             document.getElementById('clientInfo').innerHTML = '<div class="no-data">Esperando pedidos...</div>';
         }
 
-        // 🔧 DEDUPLICAR COORDENADAS (tu algoritmo)
+        // 🔧 DEDUPLICAR COORDENADAS
         function dedupeCoords(coords) {
             const seen = new Set();
             return coords.filter(coord => {
@@ -120,7 +134,7 @@
             });
         }
 
-        // 🧭 NEAREST NEIGHBOR (tu algoritmo)
+        // 🧭 NEAREST NEIGHBOR
         function nearestNeighborPath(coords) {
             if (coords.length <= 1) return coords;
             
@@ -154,7 +168,7 @@
             return path.map(idx => coords[idx]);
         }
 
-        // 🗺️ PROCESAR Y MOSTRAR TRACKING
+        // 🗺️ MOSTRAR TRACKING
         function showTracking(data) {
             clearMap();
             
@@ -169,13 +183,13 @@
                 return;
             }
 
-            // 📍 PROCESAR COORDENADAS (tu método)
+            // 📍 PROCESAR COORDENADAS
             let coords = ruta.coordenadas_array || [];
             coords = coords.map(c => [c[1], c[0]]); // lon,lat → lat,lon
             coords = dedupeCoords(coords);
             coords = nearestNeighborPath(coords);
 
-            // 🗺️ RUTA (línea transparente)
+            // 🗺️ RUTA
             currentRoute = L.polyline(coords, {
                 color: '#007bff',
                 weight: 4,
@@ -231,7 +245,7 @@
             animationInterval = setInterval(() => {
                 currentStep = (currentStep + 1) % coords.length;
                 riderMarker.setLatLng(coords[currentStep]);
-            }, 2000); // Cada 2 segundos
+            }, 2000);
 
             // 📱 ACTUALIZAR PANEL
             const eta = trackingData.eta_minutos || Math.round(ruta.tiempo_calculado_minutos);
@@ -244,61 +258,52 @@
                 <div class="eta">⏱️ Llegada: ${eta} minutos</div>
             `;
 
-            // 🎯 AUTO-FIT MAPA
+            // 🎯 ZOOM
             const group = L.featureGroup([tiendaMarker, clienteMarker, currentRoute]);
             map.fitBounds(group.getBounds().pad(0.1));
 
-            // ⏰ AUTO-LIMPIAR EN 10 MINUTOS
+            // ⏰ AUTO-LIMPIAR
             if (autoCleanTimer) clearTimeout(autoCleanTimer);
             autoCleanTimer = setTimeout(() => {
                 clearMap();
-                map.setView([-34.6037, -58.3816], 13);
-            }, 10 * 60 * 1000); // 10 minutos
+                map.setView([-34.6037, -58.3816], 12);
+            }, 10 * 60 * 1000);
         }
 
-        // 🌐 SIMULAR RECEPCIÓN DE DATOS (reemplazar con WebSocket/API)
-        function simulateDataReceived() {
-            // DATOS DE EJEMPLO (usar los reales de n8n)
-            const sampleData = [{
-                "ruta_calculada": {
-                    "tienda": {"lat": -34.56077965377718, "lon": -58.461592938922614, "nombre": "La Geográfica", "direccion": "Blanco Encalada 2680"},
-                    "cliente": {"lat": -34.5668707, "lon": -58.4623573, "nombre": "Marco Tero", "direccion": "Echeverria 3096"},
-                    "ruta": {
-                        "tiempo_calculado_minutos": 3.3,
-                        "coordenadas_array": [
-                            [-58.461592938922614,-34.56077965377718],[-58.4626763,-34.5599313],[-58.4618874,-34.5608543],
-                            [-58.4646168,-34.5576558],[-58.4639736,-34.5584201],[-58.4633896,-34.559087],
-                            [-58.4626763,-34.5599313],[-58.4652688,-34.5568681],[-58.4646168,-34.5576558],
-                            [-58.4623573,-34.5668707]
-                        ]
-                    }
-                },
-                "rider": {"nombre": "Carlos Delivery"},
-                "eta_minutos": 3
-            }];
+        // 📡 WEBHOOK SIMPLE via URL params
+        function checkForTrackingData() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const trackingParam = urlParams.get('tracking');
             
-            showTracking(sampleData);
+            if (trackingParam) {
+                try {
+                    const data = JSON.parse(decodeURIComponent(trackingParam));
+                    console.log('📡 Data recibida via URL:', data);
+                    showTracking(data);
+                    
+                    // Limpiar URL
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                } catch (error) {
+                    console.error('Error parsing tracking data:', error);
+                }
+            }
         }
 
-        // 🚀 ENDPOINT PARA n8n - Recibir POST
-        async function setupWebhook() {
-            // La web escucha en: /webhook-tracking
-            // n8n debe enviar POST a: https://tu-web.vercel.app/webhook-tracking
+        // 🚀 INICIALIZAR
+        function init() {
+            // Mostrar webhook URL
+            const currentUrl = window.location.href.split('?')[0];
+            document.getElementById('webhookUrl').textContent = currentUrl + '?tracking={{JSON_DATA}}';
             
-            // Esta función se activa cuando n8n envía data
-            window.receiveTrackingData = function(data) {
-                console.log('📡 Data recibida de n8n:', data);
-                showTracking(data);
-            };
+            // Verificar data en URL
+            checkForTrackingData();
             
-            console.log('🎯 Webhook listo para recibir data de n8n');
-            console.log('📡 n8n debe enviar POST a: https://TU-WEB.vercel.app/webhook-tracking');
+            console.log('🗺️ La Geográfica Live Tracking iniciado');
+            console.log('📡 n8n puede enviar data via: ' + currentUrl + '?tracking={{JSON_DATA}}');
         }
 
-        // 🎬 INICIALIZAR - SIN datos de muestra
-        setupWebhook();
-        
-        console.log('🗺️ La Geográfica Live Tracking iniciado - Esperando data de n8n');
+        // 🎬 INICIAR
+        init();
     </script>
 </body>
 </html>
